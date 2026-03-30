@@ -236,13 +236,17 @@ class TurboQuantWHT:
     - Uses fixed sign patterns (TBQ_SIGNS for MSE, QJL_SIGNS for QJL)
     - Block size must be 256 (WHT requires power of 2)
     - Stores keys in WHT domain, transforms query on-the-fly
+
+    Bit allocation (matching TurboQuant paper):
+    - Without QJL: MSE uses `bits` bits per element
+    - With QJL: MSE uses (bits-1) bits, QJL uses 1 bit per element
     """
 
     def __init__(self, dim: int, bits: int, block_size: Optional[int] = None):
         """
         Args:
             dim: dimension of vectors
-            bits: bits per element (2, 3, 4, 6, or 8)
+            bits: total bits per element (2, 3, 4, 6, or 8)
             block_size: WHT block size (default: next power of 2 >= dim)
         """
         assert bits in [2, 3, 4, 6, 8], f"bits must be 2, 3, 4, 6, or 8"
@@ -282,7 +286,7 @@ class TurboQuantWHT:
 
         Args:
             key: tensor of shape (..., dim)
-            use_qjl: if True, also compute QJL residual data
+            use_qjl: if True, use (bits-1) for MSE + 1 bit for QJL
 
         Returns:
             dict with quantized data for attention computation
@@ -291,6 +295,9 @@ class TurboQuantWHT:
         key_float = key.float()
         d = self.dim
         bs = self.block_size
+
+        # Bit allocation: with QJL, MSE uses (bits-1), QJL uses 1 bit
+        mse_bits = max(self.bits - 1, 1) if use_qjl else self.bits
 
         # Reshape to (n_vectors, dim)
         key_flat = key_float.reshape(-1, d)
@@ -313,8 +320,8 @@ class TurboQuantWHT:
         # Step 4: Apply WHT
         key_wht = serial_wht(key_signed)
 
-        # Step 5: Lloyd-Max quantization
-        indices, centroids = lloyd_max_quantize(key_wht, self.bits)
+        # Step 5: Lloyd-Max quantization with mse_bits
+        indices, centroids = lloyd_max_quantize(key_wht, mse_bits)
 
         # Store: indices, norm
         result = {
@@ -322,6 +329,7 @@ class TurboQuantWHT:
             'indices': indices,  # (n_vectors, block_size)
             'centroids_wht': centroids,  # (n_vectors, block_size) - centroids in WHT domain
             'key_wht_norm': key_wht,  # For debugging
+            'mse_bits': mse_bits,  # Store for attention computation
         }
 
         if use_qjl:
