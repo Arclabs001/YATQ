@@ -45,8 +45,9 @@ class RandomRotation:
         # Generate random orthogonal matrix via QR decomposition
         random_matrix = torch.randn(dim, dim)
         Q, R = torch.linalg.qr(random_matrix)
-        # Ensure proper orthogonal matrix (det = +1)
-        Q = Q * torch.sign(torch.diag(R)).unsqueeze(0)
+        # Ensure proper orthogonal matrix (det = +1) by flipping one column if needed
+        if torch.det(Q) < 0:
+            Q[:, 0] *= -1
         self.rotation_matrix = Q
 
     def apply(self, x: torch.Tensor, inverse: bool = False) -> torch.Tensor:
