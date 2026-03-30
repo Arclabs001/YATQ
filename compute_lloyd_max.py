@@ -138,7 +138,7 @@ if __name__ == "__main__":
     print("=" * 80)
 
     # Compute all bit depths
-    results = compute_all_bits([2, 3, 4, 6, 8])
+    results = compute_all_bits([1, 2, 3, 4, 5, 6, 7, 8])
 
     # Print detailed results
     print("\n" + "=" * 80)

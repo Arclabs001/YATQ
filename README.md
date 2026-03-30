@@ -340,25 +340,47 @@ scores = wht.compute_attention_scores(query, key_data, use_qjl=True, scale=1/mat
 
 ### Perplexity Comparison (Fair: Same Bit Allocation)
 
-| Total Bits | MSE Bits | QJL Bits | Random PPL | WHT PPL | WHT Better |
-|------------|----------|----------|------------|---------|------------|
-| 3 | 2 | 1 | 3376 | **2048** | 1.65x |
-| 4 | 3 | 1 | 1408 | **90** | **15.6x** |
+**MSE-Only:**
 
-**Note**: Previous results were unfair - WHT QJL used full bits for MSE. Now both methods use (bits-1) for MSE + 1 bit for QJL.
+| Bits | Random PPL | WHT PPL | WHT Better |
+|------|------------|---------|------------|
+| 2 | 9792 | **4080** | 2.40x |
+| 3 | 2048 | **624** | 3.28x |
+| 4 | 604 | **10.12** | **59.65x** |
+| 6 | 4.78 | **4.62** | 1.03x |
+| 8 | 4.66 | 4.66 | 1.00x |
 
-### MSE-Only Comparison
+**QJL (MSE bits = total - 1):**
 
-| Bits | Random PPL | WHT PPL | Better |
-|------|------------|---------|--------|
-| 3 | 2048 | **624** | WHT (3.3x) |
-| 4 | 604 | **10** | WHT (60x) |
+| Total Bits | MSE Bits | Random PPL | WHT PPL | WHT Better |
+|------------|----------|------------|---------|------------|
+| 2 | 1 | 16128 | **2800** | 5.76x |
+| 3 | 2 | 3376 | **2048** | 1.65x |
+| 4 | 3 | 1408 | **93** | **15.14x** |
+| 6 | 5 | 4.72 | **4.66** | 1.01x |
+| 8 | 7 | 4.62 | 4.62 | 1.00x |
 
-### Key Finding
+### Attention Metrics Comparison
 
-**WHT consistently outperforms Random Rotation** with fair bit allocation:
-- **4-bit total (3+1)**: WHT QJL achieves PPL 90 vs Random QJL's PPL 1408 (**15.6x better**)
-- **3-bit total (2+1)**: WHT QJL achieves PPL 2048 vs Random QJL's PPL 3376 (**1.65x better**)
+| Config | Method | CosSim | Top1% | Top5% | Variance |
+|--------|--------|--------|-------|-------|----------|
+| 4b MSE | Random | 0.9998 | 79.9 | 99.6 | 7048.44 |
+| 4b MSE | WHT | 0.9998 | **83.0** | 98.2 | **6020.10** |
+| 4b QJL | Random | 0.9990 | 69.6 | 94.2 | 29222.58 |
+| 4b QJL | WHT | 0.9996 | **78.6** | **97.8** | **5455.09** |
+
+### Observations
+
+1. **WHT significantly outperforms Random Rotation at lower bits (2-4 bits)**:
+   - 4-bit MSE: WHT PPL 10.12 vs Random PPL 604 (59.65x better)
+   - 4-bit QJL: WHT PPL 93 vs Random PPL 1408 (15.14x better)
+
+2. **At higher bits (6-8), both methods converge to baseline PPL**:
+   - Performance difference becomes negligible
+
+3. **QJL effectiveness depends on method**:
+   - WHT + QJL: QJL helps at lower bits (e.g., 4b QJL PPL 93 vs 4b MSE PPL 10.12 is worse, but 3b QJL PPL 2048 vs 3b MSE PPL 624 shows trade-off)
+   - Random Rotation + QJL: QJL hurts (4b QJL PPL 1408 vs 4b MSE PPL 604)
 
 ### Why WHT Outperforms Random Rotation
 
@@ -368,19 +390,15 @@ scores = wht.compute_attention_scores(query, key_data, use_qjl=True, scale=1/mat
 
 ### Recommendations
 
-| Use Case | Recommended Config | PPL | Notes |
-|----------|-------------------|-----|-------|
-| Best quality | WHT 4b MSE | ~10 | No QJL needed at 4-bit |
-| High compression | WHT 4b (3+1 QJL) | ~90 | QJL helps at lower bits |
-| **Avoid** | Random + QJL | - | Double randomness hurts |
-|----------|-------------------|-----|-------|-------|
-| Production quality | **WHT 4b+QJL** | ~5.0 | 4x | Near-baseline PPL, use `qwen3_wht_integration` |
-| High compression | **WHT 3b+QJL** | ~99 | 5.33x | Good PPL with high compression |
-| Maximum compression | WHT 2b+QJL | ~2256 | 8x | Better than Random Rotation alternative |
-| High quality | 8b MSE | ~4.66 | 2x | Near-perfect, both methods equivalent |
-| Random Rotation users | MSE-only | - | - | **Never use QJL with random rotation** |
+| Use Case | Recommended Config | PPL | Compression | Notes |
+|----------|-------------------|-----|-------------|-------|
+| Production quality | **WHT 4b MSE** | ~10 | 4x | Best quality-compression trade-off |
+| High compression | WHT 3b MSE | ~624 | 5.33x | Good for memory-constrained scenarios |
+| Near-baseline | WHT 6b MSE | ~4.62 | 2.67x | Minimal quality loss |
+| Perfect quality | 8b MSE | ~4.66 | 2x | Near-perfect reconstruction |
+| **Avoid** | Random + QJL | - | - | Double randomness hurts performance |
 
-**Critical**: Only use QJL with WHT implementation. Random Rotation + QJL is harmful.
+**Critical**: Use WHT implementation for best results. Random Rotation + QJL combination is harmful due to double randomness.
 
 ## File Structure
 
@@ -420,9 +438,11 @@ python measure_true_ppl.py
 ## Discussions and Future Works
 
 - ✅ **Fair Bit Allocation**: WHT QJL now correctly uses (bits-1) for MSE + 1 bit for QJL
-- ✅ **WHT Outperforms Random Rotation**: 15.6x better PPL at 4-bit with fair comparison
+- ✅ **Full Bit Range Tested**: All configurations (2,3,4,6,8 bits) tested for both MSE-only and QJL
+- ✅ **WHT Outperforms Random Rotation**: 59.65x better PPL at 4-bit MSE, 15.14x better at 4-bit QJL
 - ✅ **Root Cause Identified**: Double randomness (Q + S) in Random Rotation increases variance
 - ✅ **WHT Advantage**: Deterministic transform leads to stable QJL correction
+- ✅ **Convergence at High Bits**: Both methods converge to baseline PPL at 6-8 bits
 - 🔲 **CUDA Support**: Current implementation is PyTorch-only. CUDA kernels would significantly speed up compression
 - 🔲 **BF16 Native Support**: Currently converts to float32 for quantization. Native BF16 would reduce overhead
 - 🔲 **More Models**: Extend integration approach to other model architectures (Llama, Mistral, etc.)

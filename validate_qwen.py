@@ -192,9 +192,15 @@ def test_config(cache, num_layers, num_kv_heads, head_dim,
 
 
 def test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits, use_qjl):
-    """Test WHT configuration with comprehensive metrics."""
+    """Test WHT configuration with comprehensive metrics.
+
+    Note: When use_qjl=True, MSE uses (bits-1) bits, QJL uses 1 bit.
+    """
     total_compressed_bits = 0
     total_uncompressed_bits = 0
+
+    # Bit allocation: with QJL, MSE uses (bits-1)
+    mse_bits = max(bits - 1, 1) if use_qjl else bits
 
     # Metrics
     top1_matches = 0
@@ -224,11 +230,11 @@ def test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits, use_qjl):
         # Create WHT quantizer
         wht_q = TurboQuantWHT(dim=D, bits=bits)
 
-        # Calculate storage
+        # Calculate storage (fair: MSE bits + QJL bits = total bits)
         n_vecs = B * H * S
-        k_bits = n_vecs * D * bits + n_vecs * 16  # indices + norms
+        k_bits = n_vecs * D * mse_bits + n_vecs * 16  # MSE indices + norms
         if use_qjl:
-            k_bits += n_vecs * D + n_vecs * 16  # qjl_signs + residual_norm
+            k_bits += n_vecs * D  # QJL signs (1 bit per element)
         v_bits = n_vecs * D * bits + n_vecs * 16
         total_compressed_bits += k_bits + v_bits
 
@@ -385,108 +391,171 @@ def main():
 
     # ==========================================================================
     # Random Rotation PPL (qwen3_integration)
+    # Note: With QJL, MSE uses (bits-1), QJL uses 1 bit
+    # Valid MSE bits: 2,3,4,6,8. So valid total with QJL: 3,4,5,7,9
     # ==========================================================================
     print("\n" + "=" * 100, flush=True)
     print("RANDOM ROTATION PPL (qwen3_integration)", flush=True)
+    print("Note: QJL uses (bits-1) for MSE + 1 bit for QJL", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<15} {'Loss':>10} {'PPL':>10} {'Δ PPL':>10} {'Ratio':>8}", flush=True)
-    print("-" * 55, flush=True)
+    print(f"\n{'Config':<15} {'MSE bits':>10} {'Loss':>10} {'PPL':>10} {'Δ PPL':>10}", flush=True)
+    print("-" * 65, flush=True)
 
     rr_ppl_results = []
+    # MSE-only: bits in [2,3,4,6,8]
     for bits in [2, 3, 4, 6, 8]:
-        for use_qjl in [False, True]:
-            config_name = f"{bits}b+QJL" if use_qjl else f"{bits}b"
-            print(f"[{config_name}] Running...", end=" ", flush=True)
+        config_name = f"{bits}b MSE"
+        print(f"[{config_name}] Running...", end=" ", flush=True)
 
-            wrapper = Qwen3ForwardWithTurboQuant(model, bits=bits, use_qjl=use_qjl, keep_recent=0)
-            wrapper.kv_cache = ChunkedKVCacheQJL(
-                num_layers=wrapper.num_layers,
-                head_dim=wrapper.head_dim,
-                bits=wrapper.bits,
-                keep_recent=wrapper.keep_recent
-            )
+        wrapper = Qwen3ForwardWithTurboQuant(model, bits=bits, use_qjl=False, keep_recent=0)
+        wrapper.kv_cache = ChunkedKVCacheQJL(
+            num_layers=wrapper.num_layers,
+            head_dim=wrapper.head_dim,
+            bits=wrapper.bits,
+            keep_recent=wrapper.keep_recent
+        )
 
-            ppl, loss, seq, stats = compute_ppl_with_forward(wrapper, tokenizer, ppl_text)
-            delta = ppl - ppl_fp16
-            ratio = stats.get('ratio', 1.0)
-            print(f"\r{config_name:<15} {loss:>10.4f} {ppl:>10.4f} {delta:>+10.4f} {ratio:>8.2f}x", flush=True)
+        ppl, loss, seq, stats = compute_ppl_with_forward(wrapper, tokenizer, ppl_text)
+        delta = ppl - ppl_fp16
+        print(f"\r{config_name:<15} {bits:>10} {loss:>10.4f} {ppl:>10.2f} {delta:>+10.2f}", flush=True)
+        rr_ppl_results.append({'bits': bits, 'mse_bits': bits, 'use_qjl': False, 'ppl': ppl, 'loss': loss})
 
-            rr_ppl_results.append({'bits': bits, 'use_qjl': use_qjl, 'ppl': ppl, 'loss': loss})
+    # QJL: test all bits (MSE = bits-1)
+    for total_bits in [2, 3, 4, 6, 8]:
+        mse_bits = total_bits - 1
+        config_name = f"{total_bits}b QJL"
+        print(f"[{config_name}] Running...", end=" ", flush=True)
+
+        wrapper = Qwen3ForwardWithTurboQuant(model, bits=total_bits, use_qjl=True, keep_recent=0)
+        wrapper.kv_cache = ChunkedKVCacheQJL(
+            num_layers=wrapper.num_layers,
+            head_dim=wrapper.head_dim,
+            bits=wrapper.bits,
+            keep_recent=wrapper.keep_recent
+        )
+
+        ppl, loss, seq, stats = compute_ppl_with_forward(wrapper, tokenizer, ppl_text)
+        delta = ppl - ppl_fp16
+        print(f"\r{config_name:<15} {mse_bits:>10} {loss:>10.4f} {ppl:>10.2f} {delta:>+10.2f}", flush=True)
+        rr_ppl_results.append({'bits': total_bits, 'mse_bits': mse_bits, 'use_qjl': True, 'ppl': ppl, 'loss': loss})
 
     # ==========================================================================
     # WHT PPL (qwen3_wht_integration)
-    # ==========================================================================
+    # =========================================================================
     print("\n" + "=" * 100, flush=True)
     print("WHT PPL (qwen3_wht_integration)", flush=True)
+    print("Note: QJL uses (bits-1) for MSE + 1 bit for QJL", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<15} {'Loss':>10} {'PPL':>10} {'Δ PPL':>10} {'Ratio':>8}", flush=True)
-    print("-" * 55, flush=True)
+    print(f"\n{'Config':<15} {'MSE bits':>10} {'Loss':>10} {'PPL':>10} {'Δ PPL':>10}", flush=True)
+    print("-" * 65, flush=True)
 
     wht_ppl_results = []
+    # MSE-only: bits in [2,3,4,6,8]
     for bits in [2, 3, 4, 6, 8]:
-        for use_qjl in [False, True]:
-            config_name = f"{bits}b+QJL" if use_qjl else f"{bits}b"
-            print(f"[{config_name}] Running...", end=" ", flush=True)
+        config_name = f"{bits}b MSE"
+        print(f"[{config_name}] Running...", end=" ", flush=True)
 
-            wrapper = Qwen3ForwardWithWHT(model, bits=bits, use_qjl=use_qjl, keep_recent=0)
-            wrapper.kv_cache = WHTKVCache(
-                num_layers=wrapper.num_layers,
-                head_dim=wrapper.head_dim,
-                bits=bits,
-                use_qjl=use_qjl
-            )
+        wrapper = Qwen3ForwardWithWHT(model, bits=bits, use_qjl=False, keep_recent=0)
+        wrapper.kv_cache = WHTKVCache(
+            num_layers=wrapper.num_layers,
+            head_dim=wrapper.head_dim,
+            bits=bits,
+            use_qjl=False
+        )
 
-            ppl, loss, seq, stats = compute_ppl_with_forward(wrapper, tokenizer, ppl_text)
-            delta = ppl - ppl_fp16
-            ratio = stats.get('ratio', 1.0)
-            print(f"\r{config_name:<15} {loss:>10.4f} {ppl:>10.4f} {delta:>+10.4f} {ratio:>8.2f}x", flush=True)
+        ppl, loss, seq, stats = compute_ppl_with_forward(wrapper, tokenizer, ppl_text)
+        delta = ppl - ppl_fp16
+        print(f"\r{config_name:<15} {bits:>10} {loss:>10.4f} {ppl:>10.2f} {delta:>+10.2f}", flush=True)
+        wht_ppl_results.append({'bits': bits, 'mse_bits': bits, 'use_qjl': False, 'ppl': ppl, 'loss': loss})
 
-            wht_ppl_results.append({'bits': bits, 'use_qjl': use_qjl, 'ppl': ppl, 'loss': loss})
+    # QJL: test all bits (MSE = bits-1)
+    for total_bits in [2, 3, 4, 6, 8]:
+        mse_bits = total_bits - 1
+        config_name = f"{total_bits}b QJL"
+        print(f"[{config_name}] Running...", end=" ", flush=True)
+
+        wrapper = Qwen3ForwardWithWHT(model, bits=total_bits, use_qjl=True, keep_recent=0)
+        wrapper.kv_cache = WHTKVCache(
+            num_layers=wrapper.num_layers,
+            head_dim=wrapper.head_dim,
+            bits=total_bits,
+            use_qjl=True
+        )
+
+        ppl, loss, seq, stats = compute_ppl_with_forward(wrapper, tokenizer, ppl_text)
+        delta = ppl - ppl_fp16
+        print(f"\r{config_name:<15} {mse_bits:>10} {loss:>10.4f} {ppl:>10.2f} {delta:>+10.2f}", flush=True)
+        wht_ppl_results.append({'bits': total_bits, 'mse_bits': mse_bits, 'use_qjl': True, 'ppl': ppl, 'loss': loss})
 
     # ==========================================================================
     # Attention Score Metrics (using extracted cache)
+    # Note: With QJL, MSE uses (bits-1), so only test valid configs
     # ==========================================================================
     print("\n" + "=" * 100, flush=True)
     print("ATTENTION SCORE METRICS - Random Rotation", flush=True)
+    print("Note: QJL uses (bits-1) for MSE + 1 bit for QJL", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<18} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'KL-Div':>8} {'Bias%':>10} {'Variance':>12}", flush=True)
-    print("-" * 90, flush=True)
+    print(f"\n{'Config':<18} {'MSE':>4} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'Variance':>12}", flush=True)
+    print("-" * 80, flush=True)
 
     rr_att_results = []
+    # MSE-only
     for bits in [2, 3, 4, 6, 8]:
-        for key_qjl in [False, True]:
-            label = f"K:{bits}b+QJL" if key_qjl else f"K:{bits}b"
-            print(f"[{label}] Computing...", end=" ", flush=True)
+        label = f"K:{bits}b MSE"
+        print(f"[{label}] Computing...", end=" ", flush=True)
 
-            r = test_config(cache, num_layers, num_kv_heads, head_dim,
-                           key_bits=bits, key_use_qjl=key_qjl,
-                           val_bits=bits, val_use_qjl=False)
+        r = test_config(cache, num_layers, num_kv_heads, head_dim,
+                       key_bits=bits, key_use_qjl=False,
+                       val_bits=bits, val_use_qjl=False)
 
-            print(f"\r{label:<18} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['kl_div']:>8.4f} {r['relative_bias']:>+10.2f}% {r['ip_variance']:>12.2f}", flush=True)
+        print(f"\r{label:<18} {bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        rr_att_results.append({'bits': bits, 'mse_bits': bits, 'qjl': False, **r})
 
-            rr_att_results.append({'bits': bits, 'qjl': key_qjl, **r})
+    # QJL: test all bits
+    for total_bits in [2, 3, 4, 6, 8]:
+        mse_bits = total_bits - 1
+        label = f"K:{total_bits}b QJL"
+        print(f"[{label}] Computing...", end=" ", flush=True)
+
+        r = test_config(cache, num_layers, num_kv_heads, head_dim,
+                       key_bits=total_bits, key_use_qjl=True,
+                       val_bits=total_bits, val_use_qjl=False)
+
+        print(f"\r{label:<18} {mse_bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        rr_att_results.append({'bits': total_bits, 'mse_bits': mse_bits, 'qjl': True, **r})
 
     print("\n" + "=" * 100, flush=True)
     print("ATTENTION SCORE METRICS - WHT", flush=True)
+    print("Note: QJL uses (bits-1) for MSE + 1 bit for QJL", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<18} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'KL-Div':>8} {'Bias%':>10} {'Variance':>12}", flush=True)
-    print("-" * 90, flush=True)
+    print(f"\n{'Config':<18} {'MSE':>4} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'Variance':>12}", flush=True)
+    print("-" * 80, flush=True)
 
     wht_att_results = []
+    # MSE-only
     for bits in [2, 3, 4, 6, 8]:
-        for use_qjl in [False, True]:
-            label = f"K:{bits}b+QJL" if use_qjl else f"K:{bits}b"
-            print(f"[{label}] Computing...", end=" ", flush=True)
+        label = f"K:{bits}b MSE"
+        print(f"[{label}] Computing...", end=" ", flush=True)
 
-            r = test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits=bits, use_qjl=use_qjl)
+        r = test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits=bits, use_qjl=False)
 
-            print(f"\r{label:<18} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['kl_div']:>8.4f} {r['relative_bias']:>+10.2f}% {r['ip_variance']:>12.2f}", flush=True)
+        print(f"\r{label:<18} {bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        wht_att_results.append({'bits': bits, 'mse_bits': bits, 'qjl': False, **r})
 
-            wht_att_results.append({'bits': bits, 'qjl': use_qjl, **r})
+    # QJL: test all bits
+    for total_bits in [2, 3, 4, 6, 8]:
+        mse_bits = total_bits - 1
+        label = f"K:{total_bits}b QJL"
+        print(f"[{label}] Computing...", end=" ", flush=True)
+
+        r = test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits=total_bits, use_qjl=True)
+
+        print(f"\r{label:<18} {mse_bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        wht_att_results.append({'bits': total_bits, 'mse_bits': mse_bits, 'qjl': True, **r})
 
     # ==========================================================================
     # Attention Metrics Comparison Table
@@ -495,43 +564,58 @@ def main():
     print("ATTENTION METRICS COMPARISON (Random Rotation vs WHT)", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<12} {'Method':<10} {'CosSim':>8} {'Top1%':>7} {'Top5%':>7} {'KL-Div':>8} {'Bias%':>9} {'Variance':>12}", flush=True)
-    print("-" * 85, flush=True)
+    print(f"\n{'Config':<15} {'MSE':>4} {'Method':<10} {'CosSim':>8} {'Top1%':>7} {'Top5%':>7} {'Variance':>12}", flush=True)
+    print("-" * 75, flush=True)
 
+    # MSE-only comparison
     for bits in [2, 3, 4, 6, 8]:
-        for use_qjl in [False, True]:
-            rr = next(r for r in rr_att_results if r['bits'] == bits and r['qjl'] == use_qjl)
-            wht = next(r for r in wht_att_results if r['bits'] == bits and r['qjl'] == use_qjl)
+        rr = next(r for r in rr_att_results if r['bits'] == bits and not r['qjl'])
+        wht = next(r for r in wht_att_results if r['bits'] == bits and not r['qjl'])
 
-            label = f"{bits}b+QJL" if use_qjl else f"{bits}b"
+        print(f"{bits}b MSE{'':>8} {bits:>4} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['ip_variance']:>12.2f}", flush=True)
+        print(f"{'':<15} {bits:>4} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['ip_variance']:>12.2f}", flush=True)
+        print("-" * 75, flush=True)
 
-            print(f"{label:<12} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['kl_div']:>8.4f} {rr['relative_bias']:>+9.2f} {rr['ip_variance']:>12.2f}", flush=True)
-            print(f"{'':<12} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['kl_div']:>8.4f} {wht['relative_bias']:>+9.2f} {wht['ip_variance']:>12.2f}", flush=True)
-        print("-" * 85, flush=True)
+    # QJL comparison
+    for total_bits in [2, 3, 4, 6, 8]:
+        mse_bits = total_bits - 1
+        rr = next(r for r in rr_att_results if r['bits'] == total_bits and r['qjl'])
+        wht = next(r for r in wht_att_results if r['bits'] == total_bits and r['qjl'])
+
+        print(f"{total_bits}b QJL{'':>7} {mse_bits:>4} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['ip_variance']:>12.2f}", flush=True)
+        print(f"{'':<15} {mse_bits:>4} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['ip_variance']:>12.2f}", flush=True)
+        print("-" * 75, flush=True)
 
     # ==========================================================================
     # PPL Comparison Table
     # ==========================================================================
     print("\n" + "=" * 100, flush=True)
-    print("PPL COMPARISON SUMMARY", flush=True)
+    print("PPL COMPARISON SUMMARY (Fair Bit Allocation)", flush=True)
+    print("QJL: MSE uses (bits-1), QJL uses 1 bit", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<12} {'Random PPL':>12} {'WHT PPL':>12} {'Random Δ':>10} {'WHT Δ':>10}", flush=True)
-    print("-" * 58, flush=True)
+    print(f"\n{'Config':<12} {'MSE':>4} {'Random PPL':>12} {'WHT PPL':>12} {'WHT Better':>12}", flush=True)
+    print("-" * 60, flush=True)
 
+    # MSE-only comparison
     for bits in [2, 3, 4, 6, 8]:
-        rr_mse = next(r for r in rr_ppl_results if r['bits'] == bits and not r['use_qjl'])
-        rr_qjl = next(r for r in rr_ppl_results if r['bits'] == bits and r['use_qjl'])
-        wht_mse = next(r for r in wht_ppl_results if r['bits'] == bits and not r['use_qjl'])
-        wht_qjl = next(r for r in wht_ppl_results if r['bits'] == bits and r['use_qjl'])
+        rr = next(r for r in rr_ppl_results if r['bits'] == bits and not r['use_qjl'])
+        wht = next(r for r in wht_ppl_results if r['bits'] == bits and not r['use_qjl'])
+        ratio = rr['ppl'] / wht['ppl'] if wht['ppl'] > 0 else 0
+        print(f"{bits}b MSE{'':>7} {bits:>4} {rr['ppl']:>12.2f} {wht['ppl']:>12.2f} {ratio:>11.2f}x", flush=True)
 
-        print(f"{bits}b MSE     {rr_mse['ppl']:>12.2f} {wht_mse['ppl']:>12.2f} {rr_mse['ppl']-ppl_fp16:>+10.2f} {wht_mse['ppl']-ppl_fp16:>+10.2f}", flush=True)
-        print(f"{bits}b QJL     {rr_qjl['ppl']:>12.2f} {wht_qjl['ppl']:>12.2f} {rr_qjl['ppl']-ppl_fp16:>+10.2f} {wht_qjl['ppl']-ppl_fp16:>+10.2f}", flush=True)
-        print("-" * 58, flush=True)
+    print("-" * 60, flush=True)
 
+    # QJL comparison
+    for total_bits in [2, 3, 4, 6, 8]:
+        mse_bits = total_bits - 1
+        rr = next(r for r in rr_ppl_results if r['bits'] == total_bits and r['use_qjl'])
+        wht = next(r for r in wht_ppl_results if r['bits'] == total_bits and r['use_qjl'])
+        ratio = rr['ppl'] / wht['ppl'] if wht['ppl'] > 0 else 0
+        print(f"{total_bits}b QJL{'':>6} {mse_bits:>4} {rr['ppl']:>12.2f} {wht['ppl']:>12.2f} {ratio:>11.2f}x", flush=True)
+
+    print("-" * 60, flush=True)
     print(f"\nBaseline FP16 PPL: {ppl_fp16:.4f}", flush=True)
-
-
 
 
 if __name__ == "__main__":
