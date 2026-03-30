@@ -498,8 +498,8 @@ def main():
     print("Note: QJL uses (bits-1) for MSE + 1 bit for QJL", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<18} {'MSE':>4} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'Variance':>12}", flush=True)
-    print("-" * 80, flush=True)
+    print(f"\n{'Config':<18} {'MSE':>4} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'KL-Div':>8} {'Bias%':>8} {'Variance':>12}", flush=True)
+    print("-" * 100, flush=True)
 
     rr_att_results = []
     # MSE-only
@@ -511,7 +511,7 @@ def main():
                        key_bits=bits, key_use_qjl=False,
                        val_bits=bits, val_use_qjl=False)
 
-        print(f"\r{label:<18} {bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        print(f"\r{label:<18} {bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['kl_div']:>8.2f} {r['relative_bias']:>7.2f}% {r['ip_variance']:>12.2f}", flush=True)
         rr_att_results.append({'bits': bits, 'mse_bits': bits, 'qjl': False, **r})
 
     # QJL: test all bits
@@ -524,7 +524,7 @@ def main():
                        key_bits=total_bits, key_use_qjl=True,
                        val_bits=total_bits, val_use_qjl=False)
 
-        print(f"\r{label:<18} {mse_bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        print(f"\r{label:<18} {mse_bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['kl_div']:>8.2f} {r['relative_bias']:>7.2f}% {r['ip_variance']:>12.2f}", flush=True)
         rr_att_results.append({'bits': total_bits, 'mse_bits': mse_bits, 'qjl': True, **r})
 
     print("\n" + "=" * 100, flush=True)
@@ -532,8 +532,8 @@ def main():
     print("Note: QJL uses (bits-1) for MSE + 1 bit for QJL", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<18} {'MSE':>4} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'Variance':>12}", flush=True)
-    print("-" * 80, flush=True)
+    print(f"\n{'Config':<18} {'MSE':>4} {'Ratio':>6} {'CosSim':>8} {'Top1%':>6} {'Top5%':>6} {'KL-Div':>8} {'Bias%':>8} {'Variance':>12}", flush=True)
+    print("-" * 100, flush=True)
 
     wht_att_results = []
     # MSE-only
@@ -543,7 +543,7 @@ def main():
 
         r = test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits=bits, use_qjl=False)
 
-        print(f"\r{label:<18} {bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        print(f"\r{label:<18} {bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['kl_div']:>8.2f} {r['relative_bias']:>7.2f}% {r['ip_variance']:>12.2f}", flush=True)
         wht_att_results.append({'bits': bits, 'mse_bits': bits, 'qjl': False, **r})
 
     # QJL: test all bits
@@ -554,7 +554,7 @@ def main():
 
         r = test_config_wht(cache, num_layers, num_kv_heads, head_dim, bits=total_bits, use_qjl=True)
 
-        print(f"\r{label:<18} {mse_bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['ip_variance']:>12.2f}", flush=True)
+        print(f"\r{label:<18} {mse_bits:>4} {r['ratio']:>6.2f} {r['cos_sim']:>8.4f} {r['top1']:>6.1f} {r['top5']:>6.1f} {r['kl_div']:>8.2f} {r['relative_bias']:>7.2f}% {r['ip_variance']:>12.2f}", flush=True)
         wht_att_results.append({'bits': total_bits, 'mse_bits': mse_bits, 'qjl': True, **r})
 
     # ==========================================================================
@@ -564,17 +564,17 @@ def main():
     print("ATTENTION METRICS COMPARISON (Random Rotation vs WHT)", flush=True)
     print("=" * 100, flush=True)
 
-    print(f"\n{'Config':<15} {'MSE':>4} {'Method':<10} {'CosSim':>8} {'Top1%':>7} {'Top5%':>7} {'Variance':>12}", flush=True)
-    print("-" * 75, flush=True)
+    print(f"\n{'Config':<15} {'MSE':>4} {'Method':<10} {'CosSim':>8} {'Top1%':>7} {'Top5%':>7} {'KL-Div':>8} {'Bias%':>8} {'Variance':>12}", flush=True)
+    print("-" * 85, flush=True)
 
     # MSE-only comparison
     for bits in [2, 3, 4, 6, 8]:
         rr = next(r for r in rr_att_results if r['bits'] == bits and not r['qjl'])
         wht = next(r for r in wht_att_results if r['bits'] == bits and not r['qjl'])
 
-        print(f"{bits}b MSE{'':>8} {bits:>4} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['ip_variance']:>12.2f}", flush=True)
-        print(f"{'':<15} {bits:>4} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['ip_variance']:>12.2f}", flush=True)
-        print("-" * 75, flush=True)
+        print(f"{bits}b MSE{'':>8} {bits:>4} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['kl_div']:>8.2f} {rr['relative_bias']:>7.2f}% {rr['ip_variance']:>12.2f}", flush=True)
+        print(f"{'':<15} {bits:>4} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['kl_div']:>8.2f} {wht['relative_bias']:>7.2f}% {wht['ip_variance']:>12.2f}", flush=True)
+        print("-" * 85, flush=True)
 
     # QJL comparison
     for total_bits in [2, 3, 4, 6, 8]:
@@ -582,9 +582,9 @@ def main():
         rr = next(r for r in rr_att_results if r['bits'] == total_bits and r['qjl'])
         wht = next(r for r in wht_att_results if r['bits'] == total_bits and r['qjl'])
 
-        print(f"{total_bits}b QJL{'':>7} {mse_bits:>4} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['ip_variance']:>12.2f}", flush=True)
-        print(f"{'':<15} {mse_bits:>4} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['ip_variance']:>12.2f}", flush=True)
-        print("-" * 75, flush=True)
+        print(f"{total_bits}b QJL{'':>7} {mse_bits:>4} {'Random':<10} {rr['cos_sim']:>8.4f} {rr['top1']:>7.1f} {rr['top5']:>7.1f} {rr['kl_div']:>8.2f} {rr['relative_bias']:>7.2f}% {rr['ip_variance']:>12.2f}", flush=True)
+        print(f"{'':<15} {mse_bits:>4} {'WHT':<10} {wht['cos_sim']:>8.4f} {wht['top1']:>7.1f} {wht['top5']:>7.1f} {wht['kl_div']:>8.2f} {wht['relative_bias']:>7.2f}% {wht['ip_variance']:>12.2f}", flush=True)
+        print("-" * 85, flush=True)
 
     # ==========================================================================
     # PPL Comparison Table

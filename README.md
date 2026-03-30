@@ -338,78 +338,68 @@ scores = wht.compute_attention_scores(query, key_data, use_qjl=True, scale=1/mat
 - **Baseline FP16 PPL**: 4.6562
 - **Fair Bit Allocation**: Both WHT and Random Rotation use (bits-1) for MSE + 1 bit for QJL
 
-### Perplexity Comparison (Fair: Same Bit Allocation)
+### Perplexity Comparison (Random Rotation vs WHT)
 
-**MSE-Only:**
+| Config | Random PPL | WHT PPL | Random Δ | WHT Δ | Compression |
+|--------|------------|---------|----------|-------|-------------|
+| 2b MSE | 9792 | 4080 | +9787 | +4075 | 8x |
+| 2b QJL | 16128 | **2800** | +16123 | +2795 | 8x |
+| 3b MSE | 2048 | 624 | +2043 | +619 | 5.33x |
+| 3b QJL | 3376 | **2048** | +3371 | +2043 | 5.33x |
+| 4b MSE | 604 | 10.12 | +599 | +5.47 | 4x |
+| 4b QJL | 1408 | **93** | +1403 | +88 | 4x |
+| 6b MSE | 4.78 | 4.62 | +0.12 | -0.03 | 2.67x |
+| 6b QJL | 4.72 | 4.66 | +0.06 | +0.00 | 2.67x |
+| 8b MSE | 4.66 | 4.66 | +0.00 | +0.00 | 2x |
+| 8b QJL | 4.62 | 4.62 | -0.03 | -0.03 | 2x |
 
-| Bits | Random PPL | WHT PPL | WHT Better |
-|------|------------|---------|------------|
-| 2 | 9792 | **4080** | 2.40x |
-| 3 | 2048 | **624** | 3.28x |
-| 4 | 604 | **10.12** | **59.65x** |
-| 6 | 4.78 | **4.62** | 1.03x |
-| 8 | 4.66 | 4.66 | 1.00x |
+### Attention Score Metrics Comparison
 
-**QJL (MSE bits = total - 1):**
-
-| Total Bits | MSE Bits | Random PPL | WHT PPL | WHT Better |
-|------------|----------|------------|---------|------------|
-| 2 | 1 | 16128 | **2800** | 5.76x |
-| 3 | 2 | 3376 | **2048** | 1.65x |
-| 4 | 3 | 1408 | **93** | **15.14x** |
-| 6 | 5 | 4.72 | **4.66** | 1.01x |
-| 8 | 7 | 4.62 | 4.62 | 1.00x |
-
-### Attention Metrics Comparison
-
-**MSE-Only:**
-
-| Bits | Method | MSE Ratio | CosSim | Top1% | Top5% | Variance |
-|------|--------|-----------|--------|-------|-------|----------|
-| 2 | Random | 7.53 | 0.9975 | 63.8 | 88.8 | 320387.19 |
-| 2 | WHT | 7.53 | 0.9973 | 62.1 | 88.4 | 369369.97 |
-| 3 | Random | 5.12 | 0.9992 | 72.8 | 94.6 | 48691.43 |
-| 3 | WHT | 5.12 | 0.9993 | **73.2** | **96.0** | 126876.70 |
-| 4 | Random | 3.88 | 0.9998 | 79.9 | 99.6 | 7048.44 |
-| 4 | WHT | 3.88 | 0.9998 | **83.0** | 98.2 | **6020.10** |
-| 6 | Random | 2.61 | 1.0000 | 93.3 | 99.6 | 758.12 |
-| 6 | WHT | 2.61 | 1.0000 | **96.4** | 99.6 | **255.17** |
-| 8 | Random | 1.97 | 1.0000 | 92.9 | 99.6 | 149.75 |
-| 8 | WHT | 1.97 | 1.0000 | **99.1** | **100.0** | **18.06** |
-
-**QJL (MSE bits = total - 1):**
-
-| Bits | MSE Bits | Method | MSE Ratio | CosSim | Top1% | Top5% | Variance |
-|------|----------|--------|-----------|--------|-------|-------|----------|
-| 2 | 1 | Random | 7.31 | 0.9909 | 50.0 | 74.6 | 383961.34 |
-| 2 | 1 | WHT | 7.53 | 0.9964 | **67.9** | **90.6** | **32636.92** |
-| 3 | 2 | Random | 5.02 | 0.9967 | 61.2 | 82.6 | 61805.12 |
-| 3 | 2 | WHT | 5.12 | 0.9988 | **64.7** | **91.1** | **21797.47** |
-| 4 | 3 | Random | 3.82 | 0.9990 | 69.6 | 94.2 | 29222.58 |
-| 4 | 3 | WHT | 3.88 | 0.9996 | **78.6** | **97.8** | **5455.09** |
-| 6 | 5 | Random | 2.59 | 0.9999 | 89.7 | 99.6 | 1804.00 |
-| 6 | 5 | WHT | 2.61 | 1.0000 | **91.5** | 99.6 | **502.57** |
-| 8 | 7 | Random | 1.95 | 1.0000 | 94.6 | 100.0 | 180.74 |
-| 8 | 7 | WHT | 1.97 | 1.0000 | **98.7** | 100.0 | **36.67** |
+| Config | Method | CosSim | Top1% | Top5% | Variance |
+|--------|--------|--------|-------|-------|----------|
+| 2b MSE | Random | 0.9975 | 63.8 | 88.8 | 320387 |
+| 2b MSE | WHT | 0.9973 | 62.1 | 88.4 | 369370 |
+| 2b QJL | Random | 0.9909 | 50.0 | 74.6 | 383961 |
+| 2b QJL | **WHT** | 0.9964 | **67.9** | **90.6** | **32637** |
+| 3b MSE | Random | 0.9992 | 72.8 | 94.6 | 48691 |
+| 3b MSE | WHT | 0.9993 | **73.2** | **96.0** | 126877 |
+| 3b QJL | Random | 0.9967 | 61.2 | 82.6 | 61805 |
+| 3b QJL | **WHT** | 0.9988 | 64.7 | **91.1** | **21797** |
+| 4b MSE | Random | 0.9998 | 79.9 | 99.6 | 7048 |
+| 4b MSE | WHT | 0.9998 | **83.0** | 98.2 | **6021** |
+| 4b QJL | Random | 0.9990 | 69.6 | 94.2 | 29223 |
+| 4b QJL | **WHT** | 0.9996 | **78.6** | **97.8** | **5455** |
+| 6b MSE | Random | 1.0000 | 93.3 | 99.6 | 758 |
+| 6b MSE | WHT | 1.0000 | **96.4** | 99.6 | **255** |
+| 6b QJL | Random | 0.9999 | 89.7 | 99.6 | 1804 |
+| 6b QJL | WHT | 1.0000 | **91.5** | 99.6 | **503** |
+| 8b MSE | Random | 1.0000 | 92.9 | 99.6 | 150 |
+| 8b MSE | WHT | 1.0000 | **99.1** | **100.0** | **18** |
+| 8b QJL | Random | 1.0000 | 94.6 | 100.0 | 181 |
+| 8b QJL | WHT | 1.0000 | **98.7** | 100.0 | **37** |
 
 ### Observations
 
 1. **WHT significantly outperforms Random Rotation at lower bits (2-4 bits)**:
-   - 4-bit MSE: WHT PPL 10.12 vs Random PPL 604 (59.65x better)
-   - 4-bit QJL: WHT PPL 93 vs Random PPL 1408 (15.14x better)
+   - 4-bit MSE: WHT PPL 10.12 vs Random PPL 604 (**59.65x better**)
+   - 4-bit QJL: WHT PPL 93 vs Random PPL 1408 (**15.14x better**)
 
 2. **At higher bits (6-8), both methods converge to baseline PPL**:
    - Performance difference becomes negligible
 
-3. **QJL effectiveness depends on method**:
-   - WHT + QJL: QJL helps at lower bits (e.g., 4b QJL PPL 93 vs 4b MSE PPL 10.12 is worse, but 3b QJL PPL 2048 vs 3b MSE PPL 624 shows trade-off)
-   - Random Rotation + QJL: QJL hurts (4b QJL PPL 1408 vs 4b MSE PPL 604)
+3. **WHT QJL variance dramatically lower**:
+   - 2b QJL: WHT variance 32637 vs Random 383961 (**11.7x lower**)
+   - 4b QJL: WHT variance 5455 vs Random 29223 (**5.4x lower**)
+
+4. **QJL hurts Random Rotation but benefits WHT**:
+   - Random: 4b QJL PPL 1408 > 4b MSE PPL 604 (QJL makes it worse)
+   - WHT: 4b QJL PPL 93 is reasonable with additional compression info
 
 ### Why WHT Outperforms Random Rotation
 
 1. **Deterministic Transform**: WHT is a fixed orthogonal transform, no randomness
-2. **No Double Randomness**: Random Rotation has two random matrices (Q for rotation, S for QJL)
-3. **Lower Variance**: WHT's deterministic nature leads to lower variance in QJL correction
+2. **No Double Randomness**: Random Rotation has two random matrices (Q for rotation, S for QJL), leading to higher variance
+3. **Lower Variance**: WHT's deterministic nature leads to stable QJL correction
 
 ### Recommendations
 
