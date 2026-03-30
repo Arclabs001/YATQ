@@ -13,7 +13,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from turboquant import TurboQuantProd, TurboQuantMSE
 
 MODEL_PATH = "C:/Users/arcla/models/qwen3-1.7b"
-CONTEXT_FILE = "test_context_8k.txt"
+CONTEXT_FILE = "test_context.txt"
 
 
 def test_config(cache, num_layers, num_kv_heads, head_dim,

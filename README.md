@@ -305,6 +305,30 @@ output, weights = tq_cache.compute_attention_qjl(query)
 # Uses QJL: <query, keys> ≈ <query, k_mse> + qjl_correction
 ```
 
+### WHT-based TurboQuant (Recommended for QJL)
+
+For best results with QJL, use the WHT-based implementation matching llama.cpp:
+
+```python
+from turboquant_wht import TurboQuantWHT
+
+# Create WHT-based quantizer
+wht = TurboQuantWHT(dim=128, bits=3)
+
+# Quantize keys with QJL
+key_data = wht.quantize_key(keys, use_qjl=True)
+
+# Compute attention scores
+scores = wht.compute_attention_scores(query, key_data, use_qjl=True, scale=1/math.sqrt(128))
+```
+
+**WHT vs Random Rotation comparison (3-bit inner product MSE):**
+
+| Method | MSE | QJL Effect |
+|--------|-----|------------|
+| Random rotation | 4.34 | QJL makes it 5.7x worse |
+| **WHT** | 4.53 | **QJL makes it 1.8x better** |
+
 
 ## Experimental Results
 
@@ -313,7 +337,7 @@ output, weights = tq_cache.compute_attention_qjl(query)
 - **Context Length**: 4124 tokens
 - **Task**: Needle retrieval from long context
 
-### Main Results Table
+### Main Results Table (Top-K Accuracy)
 
 | Config | MSE bits | QJL bits | Total | Ratio | CosSim | Top1% | Top5% | KL-Div | Bias% | Variance | RelErr |
 |--------|----------|----------|-------|-------|--------|-------|-------|--------|-------|----------|--------|
@@ -335,16 +359,83 @@ output, weights = tq_cache.compute_attention_qjl(query)
 | 4 | **81.7** | 68.8 | -12.9 | -0.44% | +0.39%        | +315% |
 | 8 | **96.0** | 94.6 | -1.3 | +0.00% | -0.00%        | +18% |
 
+### True Perplexity Measurement (KV Cache Compression)
+
+Using `measure_true_ppl.py` with full forward pass through compressed KV cache:
+
+**Test Setup:**
+- **Model**: Qwen3-1.7B
+- **Context Length**: 729 tokens
+- **Compression**: 100% (keep_recent=0)
+- **Metric**: Actual perplexity with compressed KV cache
+
+**Results:**
+
+| Bits | MSE PPL | QJL PPL | Winner | Compression Ratio |
+|------|---------|---------|--------|-------------------|
+| 2    | 251904  | **22016**   | QJL (10x better) | 8.0x |
+| 3    | **1808**    | 4080    | MSE (2.3x better) | 5.33x |
+| 4    | **472**     | 1320    | MSE (2.8x better) | 4.0x |
+| 8    | 6.31    | 6.31    | Tie | 2.0x |
+
+Baseline FP16 PPL: **6.22**
+
+**Analysis:**
+
+| Bits | QJL Effect | Reason |
+|------|------------|--------|
+| 2    | **Beneficial** (10x PPL reduction) | MSE reconstruction too crude → bias dominates → QJL's unbiased estimator helps |
+| 3-4  | **Harmful** (2-3x worse PPL) | MSE reconstruction reasonable → variance dominates → QJL's variance hurts more |
+| 8    | Neutral | Sufficient precision, both equivalent |
+
+**Key Insight: Bias-Variance Trade-off**
+
+QJL eliminates bias but increases variance. The effect depends on compression level:
+- **Extreme compression (2-bit)**: MSE bias → 10% error → QJL helps by eliminating bias
+- **Moderate compression (3-4 bit)**: MSE bias → 1-3% error → QJL's added variance hurts more
+
+**Why differs from llama.cpp?**
+
+llama.cpp reports `tbqp3_0` (QJL) better than `tbq3_0` (MSE) at 3-bit. Key differences:
+
+| Implementation | Rotation Method | Sign Pattern | QJL Effect at 3-bit |
+|----------------|-----------------|--------------|---------------------|
+| YATQ (random rotation) | Random rotation (QR decomposition) | Random per seed | **Harmful** (MSE 24.75 vs 4.34) |
+| YATQ (WHT) | Walsh-Hadamard Transform | Fixed deterministic | **Beneficial** (MSE 2.53 vs 4.53) |
+| llama.cpp | Walsh-Hadamard Transform (WHT) | Fixed deterministic | Beneficial |
+
+**Explanation:**
+
+| Method | Inner Product MSE | QJL Effect |
+|--------|-------------------|------------|
+| Random 3b MSE | 4.34 | - |
+| Random 3b QJL | 24.75 | 5.7x worse |
+| WHT 3b MSE | 4.53 | - |
+| **WHT 3b QJL** | **2.53** | **1.8x better** |
+
+WHT has lower variance than random rotation:
+- WHT is deterministic (same result every time)
+- Random rotation is stochastic (different result each run)
+
+This lower variance makes QJL's unbiased estimator beneficial with WHT, but harmful with random rotation.
+
+**Recommendation**: Use WHT-based implementation (like llama.cpp) for best results with QJL.
+
 ## Key Findings
 
 ### 1. QJL Trade-off
 
 **Theory**: QJL eliminates bias but increases variance.
 
-**Observation**: In attention scenarios:
+**Observation (Top-K Accuracy)**: In attention scenarios:
 - MSE's small bias is tolerated by softmax
 - QJL's increased variance disrupts Top-1 ranking
 - **MSE-only achieves better Top-K matching at the same bit budget**
+
+**Observation (True PPL)**: QJL effect depends on compression level:
+- **2-bit**: QJL is **beneficial** (10x PPL reduction) - bias dominates at extreme compression
+- **3-4 bit**: QJL is **harmful** (2-3x worse PPL) - variance dominates at moderate compression
+- **8-bit**: Both equivalent - sufficient precision
 
 ### 2. Bias-Variance Analysis
 
@@ -366,10 +457,12 @@ Lower KL divergence = better attention distribution preservation:
 
 | Use Case | Recommended Config | Reason |
 |----------|-------------------|--------|
-| Maximum compression | 2-bit MSE | 7.5x ratio, 65% Top-1 |
-| Balanced compression | 3-4 bit MSE | 5x ratio, 70-82% Top-1 |
-| High quality | 8-bit MSE | 2x ratio, ~96% Top-1 |
-| Unbiased estimation required | 2-3 bit + QJL | Bias ≈ 0%, but lower Top-1 |
+| Maximum compression (2-bit) | **2-bit MSE + QJL** | QJL reduces PPL by 10x at extreme compression |
+| Balanced compression (3-4 bit) | **MSE-only** | QJL hurts PPL at moderate compression |
+| High quality | 8-bit MSE | 2x ratio, ~96% Top-1, PPL ≈ FP16 |
+| Unbiased estimation required | 2-3 bit + QJL | Bias ≈ 0%, but may increase PPL |
+
+**Note**: Recommendations differ from llama.cpp due to different rotation methods (random vs WHT).
 
 ## File Structure
 
@@ -377,12 +470,15 @@ Lower KL divergence = better attention distribution preservation:
 TurboQuant/
 ├── polarquant.py              # Lloyd-Max + Random Rotation quantization
 ├── qjl.py                     # QJL implementation
-├── turboquant.py              # TurboQuantMSE and TurboQuantProd classes
+├── turboquant.py              # TurboQuantMSE and TurboQuantProd classes (random rotation)
+├── turboquant_wht.py          # WHT-based TurboQuant matching llama.cpp
 ├── integrations/
 │   ├── __init__.py
 │   ├── hf_integration.py      # HuggingFace integration (MSE-only)
 │   └── qwen3_integration.py   # Qwen3 forward with full QJL support
-├── validate_qwen.py           # Validation script for Qwen3-1.7B
+├── validate_qwen.py           # Validation script for Qwen3-1.7B (Top-K accuracy)
+├── measure_true_ppl.py        # True perplexity measurement with compressed KV cache
+├── measure_true_ppl_wht.py    # WHT-based PPL test
 ├── test_context_8k.txt        # Test context file
 └── README.md
 ```
@@ -395,14 +491,21 @@ python polarquant.py
 python qjl.py
 python turboquant.py
 
-# Validate on real model
+# Validate on real model (Top-K accuracy)
 python validate_qwen.py
+
+# Measure true perplexity with compressed KV cache
+python measure_true_ppl.py
 ```
 
 ## Discussions and Future Works
 
 - ✅ **Qwen3 Integration**: Full QJL support is now available in `integrations/qwen3_integration.py`
 - ✅ **HuggingFace Integration**: MSE-only compression available in `integrations/hf_integration.py`
+- ✅ **True PPL Measurement**: `measure_true_ppl.py` confirms QJL is beneficial at 2-bit, harmful at 3-4 bit (random rotation)
+- ✅ **WHT Implementation**: `turboquant_wht.py` implements Walsh-Hadamard Transform matching llama.cpp
+- ✅ **WHT QJL Works**: WHT-based QJL is **beneficial** at 3-bit (MSE 2.53 vs 4.53), matching llama.cpp results
+- 🔲 **WHT Integration**: Full Qwen3 forward pass with WHT for true PPL measurement
 - 🔲 **CUDA Support**: Current implementation is PyTorch-only. CUDA kernels would significantly speed up compression
 - 🔲 **BF16 Native Support**: Currently converts to float32 for quantization. Native BF16 would reduce overhead
 - 🔲 **More Models**: Extend `qwen3_integration.py` approach to other model architectures (Llama, Mistral, etc.)

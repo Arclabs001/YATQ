@@ -171,10 +171,28 @@ class ChunkedKVCacheQJL:
         current_raw_v = cache_v['raw']
 
         if current_raw_k is None:
-            # First call
-            cache_k['raw'] = new_k.clone()
-            cache_v['raw'] = new_v.clone()
-            return new_k, new_v
+            # First call - check if we should compress immediately
+            raw_len = new_k.shape[2]
+            if raw_len > self.keep_recent:
+                # Compress immediately (keep_recent tokens stay raw)
+                compress_len = raw_len - self.keep_recent
+
+                to_compress_k = new_k[:, :, :compress_len, :].clone()
+                to_compress_v = new_v[:, :, :compress_len, :].clone()
+
+                k_compressed = self._compress_keys(to_compress_k, self.key_quantizers[layer_idx])
+                v_compressed = self._compress_values(to_compress_v, self.value_quantizers[layer_idx])
+
+                cache_k['chunks'].append(k_compressed)
+                cache_v['chunks'].append(v_compressed)
+
+                # Keep recent as raw
+                cache_k['raw'] = new_k[:, :, compress_len:, :].clone()
+                cache_v['raw'] = new_v[:, :, compress_len:, :].clone()
+            else:
+                cache_k['raw'] = new_k.clone()
+                cache_v['raw'] = new_v.clone()
+            return self.get_kv(layer_idx)
 
         # Append new to current raw
         combined_k = torch.cat([current_raw_k, new_k.clone()], dim=2)

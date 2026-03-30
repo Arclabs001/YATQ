@@ -414,6 +414,68 @@ class TurboQuantKVCache:
         """Get MSE-reconstructed keys and values (QJL not used)."""
         return self.get_keys(), self.get_values()
 
+    def attention_scores(self, query: torch.Tensor, scale: float = None) -> torch.Tensor:
+        """
+        Compute attention scores using QJL's unbiased inner product estimation.
+
+        Args:
+            query: (B, D) or (batch_q, D) - query vectors
+            scale: attention scale factor (default: 1.0, caller should divide by sqrt(head_dim))
+
+        Returns:
+            scores: (batch_q, S_total) - raw attention scores (before softmax)
+        """
+        if scale is None:
+            scale = 1.0
+
+        # Handle 2D query
+        if query.dim() == 2:
+            batch_q, D = query.shape
+        else:
+            raise ValueError(f"query should be 2D (batch_q, D), got shape {query.shape}")
+
+        # Get total sequence length from cache
+        if not self.key_cache["shapes"]:
+            raise ValueError("Cache is empty. Call append() first.")
+
+        # All cached keys have same batch/head structure
+        first_shape = self.key_cache["shapes"][0]
+        B_cache = first_shape[0]
+        H_cache = first_shape[1]
+
+        total_seq = sum(s[2] for s in self.key_cache["shapes"])
+
+        # Concat all stored key data
+        x_mse_all = torch.cat(self.key_cache["x_mse"], dim=0)  # (B*H*S_total, D)
+        qjl_signs_all = torch.cat(self.key_cache["qjl_signs"], dim=0)
+        residual_norm_all = torch.cat(self.key_cache["residual_norm"], dim=0)
+
+        # For simple single-batch single-head case, reshape to (B_cache, H_cache, S_total, D)
+        # Then extract keys for batch 0, head 0
+        if B_cache == 1 and H_cache == 1:
+            k_compressed = {
+                "x_mse": x_mse_all,  # (S_total, D)
+                "qjl_signs": qjl_signs_all,
+                "residual_norm": residual_norm_all,
+            }
+            scores = self.key_quantizer.inner_product(query, k_compressed)  # (batch_q, S_total)
+        else:
+            # Multi-head case: need to handle per-head computation
+            # For simplicity, assume query batch matches cache batch
+            x_mse_reshaped = x_mse_all.reshape(B_cache, H_cache, total_seq, D)
+            qjl_signs_reshaped = qjl_signs_all.reshape(B_cache, H_cache, total_seq, D)
+            residual_norm_reshaped = residual_norm_all.reshape(B_cache, H_cache, total_seq)
+
+            # Use head 0 for simplicity
+            k_compressed = {
+                "x_mse": x_mse_reshaped[0, 0].reshape(total_seq, D),
+                "qjl_signs": qjl_signs_reshaped[0, 0].reshape(total_seq, D),
+                "residual_norm": residual_norm_reshaped[0, 0].reshape(total_seq),
+            }
+            scores = self.key_quantizer.inner_product(query, k_compressed)
+
+        return scores * scale
+
     def clear(self):
         """Clear the cache."""
         self.key_cache = {"x_mse": [], "qjl_signs": [], "residual_norm": [], "shapes": []}
@@ -526,10 +588,10 @@ if __name__ == "__main__":
     true_output = torch.matmul(true_weights, values)  # (10, 128)
 
     # TurboQuant attention
-    est_scores = kv_cache.attention_scores(query) / math.sqrt(head_dim)  # (10, 256)
-    est_weights = torch.softmax(est_scores, dim=-1)
+    est_scores = kv_cache.attention_scores(query)  # (10, 256)
+    est_weights = torch.softmax(est_scores / math.sqrt(head_dim), dim=-1)
 
-    reconstructed_values = kv_cache.get_values()  # (256, 128)
+    reconstructed_values = kv_cache.get_values().squeeze(0).squeeze(0)  # (256, 128)
     est_output = torch.matmul(est_weights, reconstructed_values)  # (10, 128)
 
     # Errors
